@@ -3,6 +3,18 @@ import pdfplumber
 import re
 import pandas as pd
 from io import BytesIO
+from streamlit.runtime.uploaded_file_manager import UploadedFile
+
+# Set max upload size to 2GB (or your preferred limit)
+st.set_page_config(
+    page_title="Quotes PDF to Excel Converter",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom configuration for larger files
+st.runtime.legacy_caching.clear_cache()
+st._config.set_option("server.maxUploadSize", 1000)  # In MB (2000MB = 2GB)
 
 # Your existing regex pattern
 ITEM_LINE_RE = re.compile(
