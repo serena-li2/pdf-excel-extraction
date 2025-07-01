@@ -3,20 +3,21 @@ import pdfplumber
 import re
 import pandas as pd
 from io import BytesIO
-from streamlit.runtime.uploaded_file_manager import UploadedFile
+import tempfile
+import os
+import warnings
 
-# Set max upload size to 2GB (or your preferred limit)
+# Suppress ScriptRunContext warning
+warnings.filterwarnings("ignore", message=".*ScriptRunContext.*")
+
+# Set page config and upload size limit
 st.set_page_config(
-    page_title="Quotes PDF to Excel Converter",
+    page_title="PDF to Excel Converter",
     layout="wide",
-    initial_sidebar_state="expanded"
 )
+st._config.set_option("server.maxUploadSize", 1000)  # 1GB max upload
 
-# Custom configuration for larger files
-st.runtime.legacy_caching.clear_cache()
-st._config.set_option("server.maxUploadSize", 1000)  # In MB (2000MB = 2GB)
-
-# Your existing regex pattern
+# Original regex pattern
 ITEM_LINE_RE = re.compile(
     r'^(?P<line_no>\d+)\s+'                              # Line #
     r'(?P<qty>\d+(?:\.\d+)?)\s+'                         # Quantity
@@ -25,13 +26,13 @@ ITEM_LINE_RE = re.compile(
     r'\$(?P<ext_price>[\d,]+\.\d{2})$'                   # Extended Price
 )
 
-def extract_pdf_invoice(pdf_bytes: bytes) -> pd.DataFrame:
+def extract_pdf_invoice(pdf_path: str) -> pd.DataFrame:
     records = []
     current = None
 
     # collect all non-blank lines
     lines = []
-    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+    with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
             for ln in (page.extract_text() or "").split("\n"):
                 ln = ln.strip()
@@ -56,9 +57,10 @@ def extract_pdf_invoice(pdf_bytes: bytes) -> pd.DataFrame:
             current["Description"] += (" " + ln) if current["Description"] else ln
 
     df = pd.DataFrame(records)
-    df["Net Extended Price"] = (
-        df["Quantity Ordered"] * df["Net Unit Price"]
-    ).round(2)
+    if not df.empty:
+        df["Net Extended Price"] = (
+            df["Quantity Ordered"] * df["Net Unit Price"]
+        ).round(2)
 
     return df[[
         "Line #",
@@ -73,28 +75,42 @@ def main():
     st.title("PDF Invoice to Excel Converter")
     st.write("Upload a PDF invoice to convert it to Excel format")
     
-    uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+    uploaded_file = st.file_uploader("Choose a PDF file", type="pdf", accept_multiple_files=False)
     
     if uploaded_file is not None:
         try:
-            df = extract_pdf_invoice(uploaded_file.read())
+            # Create temporary file for processing
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                tmp_file.write(uploaded_file.getvalue())
+                tmp_path = tmp_file.name
             
-            st.success(f"Successfully extracted {len(df)} items!")
-            st.dataframe(df.head())
-            
-            # Create Excel file in memory
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False)
-            
-            # Create download button
-            st.download_button(
-                label="Download Excel file",
-                data=output.getvalue(),
-                file_name="invoice_data.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            
+            try:
+                with st.spinner("Processing PDF..."):
+                    df = extract_pdf_invoice(tmp_path)
+                
+                if df.empty:
+                    st.warning("No invoice data found. Is this a valid invoice PDF?")
+                else:
+                    st.success(f"Successfully extracted {len(df)} items!")
+                    st.dataframe(df.head())
+                    
+                    # Create Excel file in memory
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        df.to_excel(writer, index=False)
+                    
+                    # Create download button
+                    st.download_button(
+                        label="Download Excel file",
+                        data=output.getvalue(),
+                        file_name=f"{os.path.splitext(uploaded_file.name)[0]}_converted.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                
+            finally:
+                # Clean up temporary file
+                os.unlink(tmp_path)
+                
         except Exception as e:
             st.error(f"Error processing file: {str(e)}")
 
